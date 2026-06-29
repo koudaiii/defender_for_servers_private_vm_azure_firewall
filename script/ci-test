@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+#
+# CI 用の静的チェック。Azure リソースは一切作成しない。
+#   1. Bicep のコンパイル（lint / 型チェック）
+#   2. shell script の構文チェック（bash -n）
+#   3. shellcheck（インストールされている場合）
+#   4. （任意）az deployment sub validate … RUN_VALIDATE=true かつ az login 済みのとき
+#
+# Azure へのログインは 1〜3 では不要（`az bicep build` は認証不要）。
+#
+# 環境変数:
+#   RUN_VALIDATE   true で az validate も実行（要 az login + サブスクリプション） (false)
+#   LOCATION       validate 用リージョン (japaneast)
+#
+set -euo pipefail
+
+RUN_VALIDATE="${RUN_VALIDATE:-false}"
+LOCATION="${LOCATION:-japaneast}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+INFRA_DIR="$ROOT_DIR/infra"
+
+log()  { printf '\033[1;34m[ci-test]\033[0m %s\n' "$*"; }
+ok()   { printf '\033[1;32m[ok]\033[0m %s\n' "$*"; }
+err()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; }
+
+fail=0
+
+# --- 1. Bicep コンパイル ---
+if command -v az >/dev/null 2>&1; then
+  log "Bicep をコンパイル中..."
+  tmp_out="$(mktemp)"
+  if az bicep build --file "$INFRA_DIR/main.bicep" --stdout >/dev/null 2>"$tmp_out"; then
+    # 警告（Warning）も失敗扱いにする
+    if grep -Eq ' (Warning|Error) ' "$tmp_out"; then
+      err "Bicep に警告/エラーがあります:"
+      grep -E ' (Warning|Error) ' "$tmp_out" >&2 || true
+      fail=1
+    else
+      ok "Bicep コンパイル成功（警告なし）"
+    fi
+  else
+    err "Bicep コンパイル失敗:"
+    cat "$tmp_out" >&2
+    fail=1
+  fi
+  rm -f "$tmp_out"
+else
+  err "Azure CLI (az) が見つかりません。Bicep チェックをスキップします。"
+  fail=1
+fi
+
+# --- 2. shell script 構文チェック ---
+log "shell script の構文をチェック中..."
+while IFS= read -r f; do
+  if bash -n "$f"; then
+    ok "syntax: $f"
+  else
+    err "syntax NG: $f"
+    fail=1
+  fi
+done < <(find "$SCRIPT_DIR" -maxdepth 1 -type f ! -name '*.md')
+
+# --- 3. shellcheck（任意）---
+if command -v shellcheck >/dev/null 2>&1; then
+  log "shellcheck を実行中..."
+  while IFS= read -r f; do
+    if shellcheck -x "$f"; then
+      ok "shellcheck: $f"
+    else
+      err "shellcheck NG: $f"
+      fail=1
+    fi
+  done < <(find "$SCRIPT_DIR" -maxdepth 1 -type f ! -name '*.md')
+else
+  log "shellcheck 未インストールのためスキップ（任意）。"
+fi
+
+# --- 4. az validate（任意）---
+if [[ "$RUN_VALIDATE" == "true" ]]; then
+  if az account show >/dev/null 2>&1; then
+    log "az deployment sub validate を実行中..."
+    if az deployment sub validate \
+        --location "$LOCATION" \
+        --template-file "$INFRA_DIR/main.bicep" \
+        --parameters \
+            sshPublicKey="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDUMMYKEYFORVALIDATIONONLYxxxxxxxxxxxxxxxxxxx ci-validate" \
+            deploySampleVm=true \
+            enableDefenderForServersPlan=false \
+        >/dev/null; then
+      ok "az validate 成功"
+    else
+      err "az validate 失敗"
+      fail=1
+    fi
+  else
+    err "RUN_VALIDATE=true ですが az login されていません。"
+    fail=1
+  fi
+fi
+
+echo
+if [[ "$fail" -eq 0 ]]; then
+  ok "すべてのチェックに合格しました。"
+else
+  err "チェックに失敗があります。"
+fi
+exit "$fail"

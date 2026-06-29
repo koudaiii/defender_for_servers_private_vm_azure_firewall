@@ -1,0 +1,34 @@
+name: CI
+
+# Bicep のコンパイルと shell script の静的チェック（script/ci-test）を実行する。
+# Azure リソースは作成せず、az login も不要。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ci-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ubuntu-latest には Azure CLI / shellcheck がプリインストール済み。
+      # Bicep CLI は az が必要時に取得するが、決定的にするため明示インストールする。
+      - name: Install Bicep CLI
+        run: az bicep install
+
+      - name: Show tool versions
+        run: |
+          az version
+          az bicep version
+          shellcheck --version
+
+      - name: Run static checks (script/ci-test)
+        run: ./script/ci-test
