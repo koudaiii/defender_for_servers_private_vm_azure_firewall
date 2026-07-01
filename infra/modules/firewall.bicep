@@ -10,9 +10,27 @@
 //   （security.microsoft.com）の詳細設定で「Apply streamlined connectivity settings to
 //   devices managed by Intune and Defender for Cloud」を ON にする必要がある。
 //
-// 参考: https://learn.microsoft.com/defender-endpoint/streamlined-device-connectivity-urls-commercial
+// 参考（Learn）:
+//   - MDE streamlined 接続 URL / Service Tag（両タグ必要な根拠）:
+//       https://learn.microsoft.com/defender-endpoint/streamlined-device-connectivity-urls-commercial
+//   - Azure Monitor Agent のネットワーク要件（AzureMonitor / AzureResourceManager タグ）:
+//       https://learn.microsoft.com/azure/azure-monitor/agents/azure-monitor-agent-network-configuration
+//   - Azure サービスタグ一覧（各タグが表す宛先の定義元）:
+//       https://learn.microsoft.com/azure/virtual-network/service-tags-overview
+//   - Defender for Servers のプラン別サポート/要件:
+//       https://learn.microsoft.com/azure/defender-for-cloud/support-matrix-defender-for-servers
+//   補足:
 //   - OneDsCollector（EDR Cyber data）は MicrosoftDefenderForEndpoint タグに含まれないため両方必要。
 //   - config.edge.skype.com は Linux で Required（"skype" はレガシーな名残で Skype とは無関係）。
+//
+//   従来方式の宛先（下記）
+//     - MDE コア:      winatp-gw-<region>.microsoft.com（C&C）, 検体 blob（ussus*/wsus*…blob.core.windows.net）,
+//                      AutoIR（automatedirstrprd*.blob.core.windows.net）, events.data.microsoft.com
+//     - EDR Cyber data: <region>.vortex-win.data.microsoft.com, <region>-v20.events.data.microsoft.com
+//     - MAPS(AV):       *.wdcp.microsoft.com / *.wd.microsoft.com / *.wdcpalt.microsoft.com
+//     - 定義/製品更新:  go.microsoft.com / definitionupdates.microsoft.com / *.update.microsoft.com ほか
+//     - 証明書検証(CRL): crl.microsoft.com / ctldl.windowsupdate.com / www.microsoft.com/pki*（port 80 も必要）
+//   Learn（従来方式の URL 一覧）: https://learn.microsoft.com/defender-endpoint/standard-device-connectivity-urls-commercial
 
 @description('Azure リージョン')
 param location string
@@ -90,11 +108,22 @@ resource networkRules 'Microsoft.Network/firewallPolicies/ruleCollectionGroups@2
               workloadSubnetPrefix
             ]
             destinationAddresses: [
-              'AzureMonitor' // AMA: *.ods.opinsights.azure.com / *.monitor.azure.com
-              'AzureResourceManager' // management.azure.com
-              'AzureActiveDirectory' // login.microsoftonline.com
-              'MicrosoftDefenderForEndpoint' // MDE コア（MAPS / 検体 / C&C / native config）
-              'OneDsCollector' // MDE EDR Cyber data（MicrosoftDefenderForEndpoint には含まれない）
+              // AMA: global/<region>.handler.control.monitor.azure.com（DCR 取得）,
+              //      <workspaceId>.ods.opinsights.azure.com（ログ取込）, ※メトリック送信時のみ <region>.monitoring.azure.com
+              // Learn: https://learn.microsoft.com/azure/azure-monitor/agents/azure-monitor-agent-network-configuration
+              'AzureMonitor'
+              // ARM 制御プレーン: management.azure.com（AMA も必須）
+              // Learn: https://learn.microsoft.com/azure/azure-monitor/agents/azure-monitor-agent-network-configuration
+              'AzureResourceManager'
+              // Entra ID 認証: login.microsoftonline.com
+              // Learn: https://learn.microsoft.com/azure/virtual-network/service-tags-overview
+              'AzureActiveDirectory'
+              // MDE コア（streamlined 集約 URL: *.endpoint.security.microsoft.com。MAPS / 検体 / C&C / native config）
+              // Learn: https://learn.microsoft.com/defender-endpoint/streamlined-device-connectivity-urls-commercial
+              'MicrosoftDefenderForEndpoint'
+              // MDE EDR Cyber data（OneDsCollector。MicrosoftDefenderForEndpoint タグには含まれないため別途必須）
+              // Learn: https://learn.microsoft.com/defender-endpoint/streamlined-device-connectivity-urls-commercial
+              'OneDsCollector'
             ]
             destinationPorts: [
               '443'
@@ -138,7 +167,10 @@ resource applicationRules 'Microsoft.Network/firewallPolicies/ruleCollectionGrou
               workloadSubnetPrefix
             ]
             targetFqdns: [
-              'config.edge.skype.com' // MDE for Linux 内部構成（ECS）。Skype とは無関係のレガシー名
+              // MDE for Linux 内部構成（ECS）。実際のパスは https://config.edge.skype.com/config/v1。
+              // Service Tag に無いため FQDN 許可。"skype" は Skype とは無関係のレガシー名。
+              // Learn: https://learn.microsoft.com/defender-endpoint/streamlined-device-connectivity-urls-commercial
+              'config.edge.skype.com'
             ]
           }
         ]
